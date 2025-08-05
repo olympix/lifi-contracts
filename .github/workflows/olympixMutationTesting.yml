@@ -1,9 +1,14 @@
 name: Olympix Mutation Testing
 
-# - runs the olympix mutation testing on all solidity contracts inside the src/ folder
+# - runs the olympix mutation testing on chain-facing solidity contracts inside the src/ folder
 # - evaluates test suite quality by introducing code mutations and checking if tests catch them
-# - always scans all solidity files in src/ to maintain consistent GitHub Code Scanning state
+# - always scans relevant solidity files in src/ to maintain consistent GitHub Code Scanning state
 # - uploads mutation testing results to github code scanning for review and discussion within the PR
+
+# Configuration: Directories to exclude from mutation testing
+# These typically contain interfaces, utility code, tests, or mocks that aren't chain-facing
+env:
+  EXCLUDED_DIRS: "Interfaces Libraries Helpers Errors"  # Space-separated list of directory names to ignore
 
 on:
   pull_request:
@@ -30,18 +35,39 @@ jobs:
       - name: Check for Solidity Files
         id: check-files
         run: |
-          # Check if there are any Solidity files in src/
-          files=$(find src/ -name "*.sol" -type f 2>/dev/null || true)
+          # Configuration: Define excluded directories
+          echo "🔍 Excluded directories: ${EXCLUDED_DIRS}"
+          
+          # Build find command with exclusions
+          FIND_CMD="find src/ -name '*.sol' -type f"
+          
+          # Add exclusions for each directory (manually handle known directories)
+          for dir in Interfaces Libraries Helpers Errors; do
+            FIND_CMD="$FIND_CMD ! -path 'src/$dir/*'"
+            echo "🚫 Excluding: src/$dir/*"
+          done
+          
+          echo "📋 Find command: $FIND_CMD"
+          
+          # Execute the find command
+          files=$(eval "$FIND_CMD" 2>/dev/null || true)
           
           if [[ -n "$files" && $(echo "$files" | wc -w) -gt 0 ]]; then
             echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
-            echo "Found $(echo "$files" | wc -w) Solidity files to analyze"
+            echo "✅ Found $(echo "$files" | wc -w) chain-facing Solidity files to analyze"
+            
+            # Show what we're including
+            echo "📁 Chain-facing files found:"
+            echo "$files" | head -10
+            if [[ $(echo "$files" | wc -l) -gt 10 ]]; then
+              echo "... and $(($(echo "$files" | wc -l) - 10)) more files"
+            fi
           else
             echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
-            echo "No Solidity files found in src/"
+            echo "❌ No chain-facing Solidity files found in src/"
           fi
 
-  # Process all files via directory scanning
+  # Process chain-facing files only
   mutation-testing-execution:
     name: Mutation Testing
     runs-on: ubuntu-latest
@@ -54,12 +80,29 @@ jobs:
       - name: Generate File Arguments
         id: file-args
         run: |
-          # Get all Solidity files (limit to 100 for CLI compatibility)
-          files=$(find src/ -name "*.sol" -type f | head -100)
+          # Configuration: Define excluded directories
+          echo "🔍 Building file list with exclusions: ${EXCLUDED_DIRS}"
+          
+          # Build find command with exclusions
+          FIND_CMD="find src/ -name '*.sol' -type f"
+          
+          # Add exclusions for each directory (manually handle known directories)
+          for dir in Interfaces Libraries Helpers Errors; do
+            FIND_CMD="$FIND_CMD ! -path 'src/$dir/*'"
+          done
+          
+          # Get chain-facing Solidity files (limit to 100 for CLI compatibility)
+          files=$(eval "$FIND_CMD" | head -100)
           total_files=$(echo "$files" | wc -l)
           
-          echo "🔄 Running mutation testing on Solidity files in src/"
-          echo "📁 Found $total_files files to analyze (limited to 100)"
+          echo "🔄 Running mutation testing on chain-facing Solidity files"
+          echo "📁 Found $total_files chain-facing files to analyze (limited to first 100)"
+          
+          # Show excluded vs included breakdown
+          all_files=$(find src/ -name "*.sol" -type f | wc -l)
+          excluded_files=$(eval "$FIND_CMD" | wc -l)
+          excluded_count=$((all_files - excluded_files))
+          echo "📊 File breakdown: $total_files included, $excluded_count excluded (total: $all_files)"
           
           # Generate CLI arguments with explicit file paths
           args="-w . -env"
@@ -68,7 +111,7 @@ jobs:
           done
           
           echo "MUTATION_ARGS=$args" >> $GITHUB_OUTPUT
-          echo "🚀 Generated arguments with explicit file paths"
+          echo "🚀 Generated arguments for chain-facing files only"
 
       - name: Run Olympix Mutation Testing
         uses: olympix/mutation-test-generator@main
@@ -82,8 +125,21 @@ jobs:
 
       - name: Success Summary
         run: |
-          total_files=$(find src/ -name "*.sol" -type f | head -100 | wc -l)
+          # Configuration: Show excluded directories
+          echo "🚫 Excluded directories: ${EXCLUDED_DIRS}"
+          
+          # Build find command with exclusions (same logic as above)
+          FIND_CMD="find src/ -name '*.sol' -type f"
+          for dir in Interfaces Libraries Helpers Errors; do
+            FIND_CMD="$FIND_CMD ! -path 'src/$dir/*'"
+          done
+          
+          total_files=$(eval "$FIND_CMD" | head -100 | wc -l)
+          all_files=$(find src/ -name "*.sol" -type f | wc -l)
+          excluded_files=$(eval "$FIND_CMD" | wc -l)
+          excluded_count=$((all_files - excluded_files))
+          
           echo "✅ Mutation testing completed successfully"
-          echo "📁 Processed $total_files files via explicit file paths"
+          echo "📁 Processed $total_files chain-facing files (excluded $excluded_count utility files)"
           echo "🔍 Results uploaded to GitHub Code Scanning"
           echo "📋 Check the Security tab for mutation testing alerts" 
