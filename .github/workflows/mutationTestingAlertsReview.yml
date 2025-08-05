@@ -21,6 +21,11 @@ on:
     types:
       - completed
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number (leave empty to auto-detect)'
+        required: false
+        type: string
 
 permissions:
   contents: read # required to fetch repository contents
@@ -45,97 +50,111 @@ jobs:
           echo "Waiting for mutation-results check run to complete..."
           
           # Get the commit SHA from the triggering workflow
-          COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          else
+            COMMIT_SHA="${{ github.sha }}"
+          fi
           echo "Checking commit SHA: $COMMIT_SHA"
           
-          # Wait up to 5 minutes for the mutation-results check run
-          MAX_WAIT=300  # 5 minutes
-          WAIT_TIME=0
-          CHECK_INTERVAL=30  # Check every 30 seconds
+          if [[ -z "$COMMIT_SHA" ]]; then
+            COMMIT_SHA="${{ github.sha }}"
+          fi
           
-          while [ $WAIT_TIME -lt $MAX_WAIT ]; do
-            echo "Checking for mutation-results check run... (${WAIT_TIME}s elapsed)"
+          echo "Using commit SHA: $COMMIT_SHA"
+          
+          MAX_WAIT=300  # 5 minutes max wait
+          CHECK_INTERVAL=30
+          elapsed=0
+          
+          # Set default repo for gh CLI
+          echo "${{ github.repository }}" > .git_repo
+          export GH_REPO=$(cat .git_repo)
+          echo "Set default repo: $GH_REPO"
+          
+          while [[ $elapsed -lt $MAX_WAIT ]]; do
+            echo "Checking for mutation-results check run (elapsed: ${elapsed}s)..."
             
             # Get check runs for the commit
-            CHECK_RUNS=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            CHECK_RUNS_RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
             
-            # Look for mutation-results check run
-            MUTATION_CHECK=$(echo "$CHECK_RUNS" | jq -r '.check_runs[] | select(.name == "mutation-results") | .status + ":" + .conclusion')
-            
-            # Debug: Show all check runs if we can't find mutation-results
-            if [[ -z "$MUTATION_CHECK" ]]; then
-              echo "Available check runs:"
-              echo "$CHECK_RUNS" | jq -r '.check_runs[] | .name + " (" + .status + ":" + (.conclusion // "null") + ")"'
-            fi
-            
-            if [[ "$MUTATION_CHECK" == "completed:success" ]]; then
-              echo "✅ mutation-results check run completed successfully!"
-              break
-            elif [[ "$MUTATION_CHECK" == "completed:failure" ]]; then
-              echo "❌ mutation-results check run failed"
-              exit 1
-            elif [[ "$MUTATION_CHECK" == *"completed"* ]]; then
-              echo "⚠️ mutation-results check run completed with status: $MUTATION_CHECK"
-              exit 1
-            elif [[ -n "$MUTATION_CHECK" ]]; then
-              echo "⏳ mutation-results check run is still running: $MUTATION_CHECK"
+            if echo "$CHECK_RUNS_RESPONSE" | jq -e '.check_runs' >/dev/null 2>&1; then
+              MUTATION_CHECK=$(echo "$CHECK_RUNS_RESPONSE" | jq -r \
+                '.check_runs[]? | select(.name == "mutation-results") | .status + ":" + .conclusion')
+              
+              if [[ -n "$MUTATION_CHECK" && "$MUTATION_CHECK" != "null:null" ]]; then
+                echo "Found mutation-results check run: $MUTATION_CHECK"
+                
+                if [[ "$MUTATION_CHECK" == "completed:success" ]]; then
+                  echo "✅ mutation-results check run completed successfully"
+                  break
+                elif [[ "$MUTATION_CHECK" == "completed:"* ]]; then
+                  echo "⚠️ mutation-results check run completed with status: $MUTATION_CHECK"
+                  break
+                else
+                  echo "🔄 mutation-results check run in progress: $MUTATION_CHECK"
+                fi
+              else
+                echo "⏳ No mutation-results check run found yet"
+              fi
             else
-              echo "🔍 mutation-results check run not found yet"
+              echo "⚠️ Unable to fetch check runs"
             fi
             
             sleep $CHECK_INTERVAL
-            WAIT_TIME=$((WAIT_TIME + CHECK_INTERVAL))
+            elapsed=$((elapsed + CHECK_INTERVAL))
           done
           
-          if [ $WAIT_TIME -ge $MAX_WAIT ]; then
-            echo "⚠️ Timeout waiting for mutation-results check run to complete"
-            echo "Proceeding anyway to check for existing Code Scanning results..."
-            
-            # Check if we have any existing mutation testing results at all
-            EXISTING_ALERTS=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts?tool=Olympix%20Mutation%20Testing&per_page=1")
-            
-                         if echo "$EXISTING_ALERTS" | jq -e '. | length > 0' > /dev/null 2>&1; then
-               echo "Found existing mutation testing results, continuing with PR summary..."
-               echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
-             else
-               echo "No existing mutation testing results found, skipping PR summary"
-               exit 0
-             fi
+          if [[ $elapsed -ge $MAX_WAIT ]]; then
+            echo "⏰ Timeout waiting for mutation-results check run"
+            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
           fi
 
       - name: Get PR Number
-        id: get_pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Try to get PR number from different contexts
-          PR_NUMBER=""
-          
-          # If triggered by pull_request event
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # Manual trigger - use provided PR number or current branch
+            if [[ -n "${{ github.event.inputs.pr_number }}" ]]; then
+              PR_NUMBER="${{ github.event.inputs.pr_number }}"
+              echo "Using manual PR number: $PR_NUMBER"
+            else
+              # Try to find PR for current branch
+              BRANCH_NAME="${{ github.ref_name }}"
+              echo "Looking for PR for branch: $BRANCH_NAME"
+              PR_RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+                "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${BRANCH_NAME}&state=open")
+              
+              if echo "$PR_RESPONSE" | jq -e '. | type == "array" and length > 0' >/dev/null 2>&1; then
+                PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.[0].number')
+                echo "Found PR for branch: $PR_NUMBER"
+              else
+                echo "No open PR found for branch $BRANCH_NAME"
+                exit 0
+              fi
+            fi
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
             PR_NUMBER="${{ github.event.number }}"
-            echo "PR number from pull_request event: $PR_NUMBER"
-          
-          # If triggered by workflow_run or workflow_dispatch, search for PR
-          elif [ -n "${{ github.sha }}" ]; then
-            echo "Searching for PR associated with commit ${{ github.sha }}"
-            SEARCH_RESULT=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${{ github.ref_name }}")
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Get PR number from workflow_run context
+            PR_RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+              "https://api.github.com/repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls")
             
-            PR_NUMBER=$(echo "$SEARCH_RESULT" | jq -r '.[0].number // empty')
-            echo "PR number from API search: $PR_NUMBER"
-          fi
-          
-          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" == "null" ]; then
-            echo "Warning: No pull request found for this trigger."
-            echo "This workflow should only run in PR context. Skipping..."
+            if echo "$PR_RESPONSE" | jq -e '. | type == "array" and length > 0' >/dev/null 2>&1; then
+              PR_NUMBER=$(echo "$PR_RESPONSE" | jq -r '.[0].number')
+            else
+              echo "No PR found for commit ${{ github.event.workflow_run.head_sha }}"
+              exit 0
+            fi
+          else
+            echo "Unable to determine PR number"
             exit 0
           fi
           
-          echo "Using PR number: $PR_NUMBER"
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "Using PR number: $PR_NUMBER"
 
       - name: Fetch Mutation Testing Results for PR
         env:
@@ -258,22 +277,36 @@ jobs:
         run: |
           echo "Searching for existing PR comment..."
 
-          # Get comments with error handling - limit to recent comments only
-          COMMENTS_RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+          # Get comments with better error handling
+          COMMENTS_RESPONSE=$(curl -s -w "%{http_code}" -H "Authorization: token ${GITHUB_TOKEN}" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments?per_page=20&sort=updated&direction=desc")
           
-          echo "Recent comments count: $(echo "$COMMENTS_RESPONSE" | jq 'length // 0')"
+          # Extract HTTP status code and response body
+          HTTP_CODE="${COMMENTS_RESPONSE: -3}"
+          COMMENTS_BODY="${COMMENTS_RESPONSE%???}"
           
-          # Check if response is valid JSON array
-          if echo "$COMMENTS_RESPONSE" | jq -e '. | type == "array"' > /dev/null 2>&1; then
-            COMMENT_ID=$(echo "$COMMENTS_RESPONSE" | jq -r \
-              '.[] | select(.body | startswith("## 🧪 Mutation Testing Summary")) | .id // empty' | head -1)
+          echo "API response code: $HTTP_CODE"
+          
+          if [[ "$HTTP_CODE" == "200" ]]; then
+            echo "Recent comments count: $(echo "$COMMENTS_BODY" | jq 'length // 0' 2>/dev/null || echo "0")"
+            
+            # Check if response is valid JSON array
+            if echo "$COMMENTS_BODY" | jq -e '. | type == "array"' >/dev/null 2>&1; then
+              # Look for comment starting with the correct header
+              COMMENT_ID=$(echo "$COMMENTS_BODY" | jq -r \
+                '.[] | select(.body | test("^### 🧪 Olympix Mutation Testing")) | .id // empty' | head -1)
+            else
+              echo "Warning: Invalid JSON response from comments API"
+              echo "Response preview: ${COMMENTS_BODY:0:200}..."
+              COMMENT_ID=""
+            fi
           else
-            echo "Warning: Invalid JSON response from comments API"
+            echo "Error: API returned HTTP $HTTP_CODE"
+            echo "Response preview: ${COMMENTS_BODY:0:200}..."
             COMMENT_ID=""
           fi
 
-          if [[ -n "$COMMENT_ID" && "$COMMENT_ID" != "null" ]]; then
+          if [[ -n "$COMMENT_ID" && "$COMMENT_ID" != "null" && "$COMMENT_ID" != "empty" ]]; then
             echo "EXISTING_COMMENT_ID=$COMMENT_ID" >> $GITHUB_ENV
             echo "Found existing comment ID: $COMMENT_ID"
           else
@@ -322,7 +355,7 @@ jobs:
             fi
           fi
 
-                    # Simple action items
+          # Simple action items
           if [[ "$SURVIVING_COUNT" -gt 0 ]]; then
             COMMENT_BODY+=$(printf -- "👀 [View details](../../security/code-scanning?tool=Olympix%%20Mutation%%20Testing) • Add tests to kill mutants\n")
           else
@@ -333,18 +366,32 @@ jobs:
           COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
           
           # Update existing comment if found; otherwise, post a new one.
-          if [[ -n "$EXISTING_COMMENT_ID" ]]; then
+          if [[ -n "${EXISTING_COMMENT_ID:-}" ]]; then
             echo "Updating existing comment ID: $EXISTING_COMMENT_ID"
-            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -w "%{http_code}" -X PATCH \
+              -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
               -d @- \
               "https://api.github.com/repos/${{ github.repository }}/issues/comments/${EXISTING_COMMENT_ID}")
-            echo "Update response: $RESPONSE"
+            
+            HTTP_CODE="${RESPONSE: -3}"
+            RESPONSE_BODY="${RESPONSE%???}"
+            echo "Update response code: $HTTP_CODE"
+            if [[ "$HTTP_CODE" != "200" ]]; then
+              echo "Update failed: ${RESPONSE_BODY:0:200}..."
+            fi
           else
-            echo "Posting new comment to PR..."
-            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+            echo "Posting new comment to PR $PR_NUMBER..."
+            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -w "%{http_code}" -X POST \
+              -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
               -d @- \
               "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments")
-            echo "Post response: $RESPONSE"
+            
+            HTTP_CODE="${RESPONSE: -3}"
+            RESPONSE_BODY="${RESPONSE%???}"
+            echo "Post response code: $HTTP_CODE"
+            if [[ "$HTTP_CODE" != "201" ]]; then
+              echo "Post failed: ${RESPONSE_BODY:0:200}..."
+            fi
           fi
 
  
