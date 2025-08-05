@@ -294,7 +294,7 @@ jobs:
             if echo "$COMMENTS_BODY" | jq -e '. | type == "array"' >/dev/null 2>&1; then
               # Look for comment starting with the correct header
               COMMENT_ID=$(echo "$COMMENTS_BODY" | jq -r \
-                '.[] | select(.body | test("^### 🧪 Olympix Mutation Testing")) | .id // empty' | head -1)
+                '.[] | select(.body | test("^## Mutation Testing Report")) | .id // empty' | head -1)
             else
               echo "Warning: Invalid JSON response from comments API"
               echo "Response preview: ${COMMENTS_BODY:0:200}..."
@@ -317,50 +317,74 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create comment body with proper line breaks using printf
+          # Always show comprehensive statistics, even if zero
+          KILLED_COUNT=$((TOTAL_MUTANTS - SURVIVING_COUNT))
+          
           if [[ "$TOTAL_MUTANTS" -gt 0 ]]; then
-            KILLED_COUNT=$((TOTAL_MUTANTS - SURVIVING_COUNT))
             MUTATION_SCORE=$(( (KILLED_COUNT * 100) / TOTAL_MUTANTS ))
-            
-            # Determine status emoji based on score
-            if [[ $MUTATION_SCORE -ge 80 ]]; then
-              STATUS_EMOJI="✅"
-            elif [[ $MUTATION_SCORE -ge 60 ]]; then
-              STATUS_EMOJI="🟡"
-            elif [[ $MUTATION_SCORE -ge 40 ]]; then
-              STATUS_EMOJI="🟠"
-            else
-              STATUS_EMOJI="🔴"
-            fi
-            
-            COMMENT_BODY=$(printf -- "### 🧪 Olympix Mutation Testing\n\n")
-            
-            # Add note if showing existing results due to timeout
-            if [[ "${SHOWING_EXISTING_RESULTS:-false}" == "true" ]]; then
-              COMMENT_BODY+=$(printf -- "⚠️ *Showing existing results - current run in progress*\n\n")
-            fi
-            
-            COMMENT_BODY+=$(printf -- "%s **Score: %s%%** (%s/%s killed)\n\n" "$STATUS_EMOJI" "$MUTATION_SCORE" "$KILLED_COUNT" "$TOTAL_MUTANTS")
-            if [[ $SURVIVING_COUNT -gt 0 ]]; then
-              COMMENT_BODY+=$(printf -- "⚠️ **%s coverage gaps** need attention\n\n" "$SURVIVING_COUNT")
-            fi
           else
-            COMMENT_BODY=$(printf -- "### 🧪 Olympix Mutation Testing\n\n")
-            
-            # Add note if showing existing results due to timeout  
-            if [[ "${SHOWING_EXISTING_RESULTS:-false}" == "true" ]]; then
-              COMMENT_BODY+=$(printf -- "⚠️ *Current run in progress - no previous results available*\n\n")
+            MUTATION_SCORE=0
+          fi
+          
+          # Create professional comment header
+          COMMENT_BODY=$(printf -- "## Mutation Testing Report\n\n")
+          
+          # Add status note if showing existing results
+          if [[ "${SHOWING_EXISTING_RESULTS:-false}" == "true" ]]; then
+            COMMENT_BODY+=$(printf -- "**Note:** Displaying existing results while current analysis is in progress.\n\n")
+          fi
+          
+          # Core statistics table
+          COMMENT_BODY+=$(printf -- "### Test Coverage Analysis\n\n")
+          COMMENT_BODY+=$(printf -- "| Metric | Value |\n")
+          COMMENT_BODY+=$(printf -- "|--------|-------|\n")
+          COMMENT_BODY+=$(printf -- "| **Mutation Score** | %d%% |\n" "$MUTATION_SCORE")
+          COMMENT_BODY+=$(printf -- "| **Total Mutants** | %d |\n" "$TOTAL_MUTANTS")
+          COMMENT_BODY+=$(printf -- "| **Killed Mutants** | %d |\n" "$KILLED_COUNT")
+          COMMENT_BODY+=$(printf -- "| **Surviving Mutants** | %d |\n" "$SURVIVING_COUNT")
+          COMMENT_BODY+=$(printf -- "| **Dismissed Findings** | %d |\n\n" "$DISMISSED_COUNT")
+          
+          # Assessment based on mutation score
+          if [[ $MUTATION_SCORE -ge 90 ]]; then
+            ASSESSMENT="Excellent"
+            RECOMMENDATION="Test coverage meets enterprise standards."
+          elif [[ $MUTATION_SCORE -ge 80 ]]; then
+            ASSESSMENT="Good" 
+            RECOMMENDATION="Test coverage is adequate with minor gaps identified."
+          elif [[ $MUTATION_SCORE -ge 70 ]]; then
+            ASSESSMENT="Moderate"
+            RECOMMENDATION="Test coverage requires improvement to meet quality standards."
+          elif [[ $MUTATION_SCORE -ge 50 ]]; then
+            ASSESSMENT="Poor"
+            RECOMMENDATION="Significant test coverage gaps detected. Review and enhancement required."
+          else
+            ASSESSMENT="Critical"
+            RECOMMENDATION="Test coverage is insufficient. Immediate attention required."
+          fi
+          
+          COMMENT_BODY+=$(printf -- "### Quality Assessment\n\n")
+          COMMENT_BODY+=$(printf -- "**Coverage Quality:** %s\n\n" "$ASSESSMENT")
+          COMMENT_BODY+=$(printf -- "**Recommendation:** %s\n\n" "$RECOMMENDATION")
+          
+          # Action items
+          if [[ $SURVIVING_COUNT -gt 0 ]]; then
+            COMMENT_BODY+=$(printf -- "### Required Actions\n\n")
+            COMMENT_BODY+=$(printf -- "- Review %d surviving mutants in [Code Scanning](../../security/code-scanning?tool=Olympix%%20Mutation%%20Testing)\n" "$SURVIVING_COUNT")
+            COMMENT_BODY+=$(printf -- "- Add test cases to eliminate coverage gaps\n")
+            COMMENT_BODY+=$(printf -- "- Validate business logic assertions in existing tests\n\n")
+          else
+            if [[ $TOTAL_MUTANTS -gt 0 ]]; then
+              COMMENT_BODY+=$(printf -- "### Status\n\n")
+              COMMENT_BODY+=$(printf -- "All generated mutants have been successfully eliminated by the test suite.\n\n")
             else
-              COMMENT_BODY+=$(printf -- "ℹ️ **No results found**\n\n")
+              COMMENT_BODY+=$(printf -- "### Status\n\n")
+              COMMENT_BODY+=$(printf -- "No mutation testing results available. This may indicate a configuration issue or that no testable code was found.\n\n")
             fi
           fi
-
-          # Simple action items
-          if [[ "$SURVIVING_COUNT" -gt 0 ]]; then
-            COMMENT_BODY+=$(printf -- "👀 [View details](../../security/code-scanning?tool=Olympix%%20Mutation%%20Testing) • Add tests to kill mutants\n")
-          else
-            COMMENT_BODY+=$(printf -- "🎉 **Perfect coverage** - all mutants killed!\n")
-          fi
+          
+          # Technical details
+          COMMENT_BODY+=$(printf -- "---\n")
+          COMMENT_BODY+=$(printf -- "*Mutation testing evaluates test suite quality by introducing code changes and verifying test failures.*")
 
           # Properly escape JSON for API call
           COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
