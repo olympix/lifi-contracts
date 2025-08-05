@@ -23,9 +23,14 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR Number (leave empty to auto-detect)'
-        required: false
+        description: 'PR number to generate summary for'
+        required: true
         type: string
+      skip_check_run_wait:
+        description: 'Skip waiting for mutation-results check run to complete'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read # required to fetch repository contents
@@ -44,72 +49,62 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Wait for mutation-results check run to complete
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.skip_check_run_wait != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Waiting for mutation-results check run to complete..."
           
-          # Get the commit SHA from the triggering workflow
+          # Determine commit SHA
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
           else
             COMMIT_SHA="${{ github.sha }}"
           fi
-          echo "Checking commit SHA: $COMMIT_SHA"
           
-          if [[ -z "$COMMIT_SHA" ]]; then
-            COMMIT_SHA="${{ github.sha }}"
-          fi
+          echo "Looking for check runs on commit: $COMMIT_SHA"
           
-          echo "Using commit SHA: $COMMIT_SHA"
-          
+          # Wait for mutation-results check run with timeout
           MAX_WAIT=300  # 5 minutes max wait
-          CHECK_INTERVAL=30
-          elapsed=0
+          WAIT_TIME=0
+          SLEEP_INTERVAL=10
           
-          # Set default repo for gh CLI
-          echo "${{ github.repository }}" > .git_repo
-          export GH_REPO=$(cat .git_repo)
-          echo "Set default repo: $GH_REPO"
-          
-          while [[ $elapsed -lt $MAX_WAIT ]]; do
-            echo "Checking for mutation-results check run (elapsed: ${elapsed}s)..."
+          while [[ $WAIT_TIME -lt $MAX_WAIT ]]; do
+            echo "Checking for mutation-results check run (${WAIT_TIME}s elapsed)..."
             
-            # Get check runs for the commit
-            CHECK_RUNS_RESPONSE=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
+            CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
             
-            if echo "$CHECK_RUNS_RESPONSE" | jq -e '.check_runs' >/dev/null 2>&1; then
-              MUTATION_CHECK=$(echo "$CHECK_RUNS_RESPONSE" | jq -r \
-                '.check_runs[]? | select(.name == "mutation-results") | .status + ":" + .conclusion')
+            # Look for mutation-results check run
+            MUTATION_STATUS=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .status' 2>/dev/null || echo "")
+            MUTATION_CONCLUSION=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .conclusion' 2>/dev/null || echo "")
+            
+            if [[ -n "$MUTATION_STATUS" ]]; then
+              echo "Found mutation-results check run - Status: $MUTATION_STATUS, Conclusion: $MUTATION_CONCLUSION"
               
-              if [[ -n "$MUTATION_CHECK" && "$MUTATION_CHECK" != "null:null" ]]; then
-                echo "Found mutation-results check run: $MUTATION_CHECK"
-                
-                if [[ "$MUTATION_CHECK" == "completed:success" ]]; then
-                  echo "✅ mutation-results check run completed successfully"
-                  break
-                elif [[ "$MUTATION_CHECK" == "completed:"* ]]; then
-                  echo "⚠️ mutation-results check run completed with status: $MUTATION_CHECK"
-                  break
-                else
-                  echo "🔄 mutation-results check run in progress: $MUTATION_CHECK"
-                fi
-              else
-                echo "⏳ No mutation-results check run found yet"
+              if [[ "$MUTATION_STATUS" == "completed" ]]; then
+                echo "✅ mutation-results check run completed with conclusion: $MUTATION_CONCLUSION"
+                break
               fi
             else
-              echo "⚠️ Unable to fetch check runs"
+              echo "No mutation-results check run found yet..."
             fi
             
-            sleep $CHECK_INTERVAL
-            elapsed=$((elapsed + CHECK_INTERVAL))
+            sleep $SLEEP_INTERVAL
+            WAIT_TIME=$((WAIT_TIME + SLEEP_INTERVAL))
           done
           
-          if [[ $elapsed -ge $MAX_WAIT ]]; then
-            echo "⏰ Timeout waiting for mutation-results check run"
+          if [[ $WAIT_TIME -ge $MAX_WAIT ]]; then
+            echo "⏰ Timeout reached. Proceeding with existing results..."
             echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
           fi
+
+      - name: Skip check run wait (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.skip_check_run_wait == 'true'
+        run: |
+          echo "⚡ Skipping check run wait for manual dispatch run"
+          echo "📊 Proceeding immediately with available results"
+          echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
 
       - name: Get PR Number
         env:
