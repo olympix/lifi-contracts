@@ -66,7 +66,7 @@ jobs:
           OLYMPIX_GITHUB_COMMIT_HEAD_SHA: ${{ github.sha }}
           OPIX_DEBUG: true
         with:
-          args: generate-mutation-tests -w . --include-dot-env
+          args: -w . -env
 
       - name: Success Summary
         run: |
