@@ -106,6 +106,16 @@ jobs:
       - name: Install forge Dependencies
         run: forge install
 
+      - name: Verify Forge Compilation
+        run: |
+          echo "🔨 Verifying Forge compilation..."
+          forge build --force
+          
+          echo "🧪 Testing basic forge test execution..."
+          forge test --list | head -10
+          
+          echo "✅ Forge compilation and test discovery successful"
+
       - name: Generate File Arguments
         id: file-args
         run: |

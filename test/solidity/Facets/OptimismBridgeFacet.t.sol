@@ -274,6 +274,11 @@ contract OptimismBridgeFacetTest is TestBase {
         bridgeData.sendingAssetId = address(0); // Native ETH
         bridgeData.minAmount = 0.1 ether;
 
+        // Define swap path: ETH -> USDC
+        address[] memory path = new address[](2);
+        path[0] = ADDRESS_WRAPPED_NATIVE; // WETH
+        path[1] = USDC_ADDRESS; // USDC
+
         // Create swap data that swaps ETH to USDC
         LibSwap.SwapData[] memory swapData = new LibSwap.SwapData[](1);
         swapData[0] = LibSwap.SwapData(
@@ -285,7 +290,7 @@ contract OptimismBridgeFacetTest is TestBase {
             abi.encodeWithSelector(
                 uniswap.swapExactETHForTokens.selector,
                 0,
-                validTokenAddresses,
+                path,
                 address(optimismBridgeFacet),
                 block.timestamp + 20 minutes
             ),
