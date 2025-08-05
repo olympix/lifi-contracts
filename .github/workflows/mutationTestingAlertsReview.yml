@@ -373,13 +373,17 @@ jobs:
               COMMENT_BODY+="All generated mutants have been successfully eliminated by the test suite.\n\n"
             else
               COMMENT_BODY+="### Status\n\n"
-              COMMENT_BODY+="No mutation testing results available. This may indicate a configuration issue or that no testable code was found.\n\n"
+              COMMENT_BODY+="No mutation testing analysis results are currently available for this branch.\n\n"
+              COMMENT_BODY+="**Diagnostic Information:**\n"
+              COMMENT_BODY+="- [View Latest Mutation Testing Workflow](../../actions/workflows/olympixMutationTesting.yml)\n"
+              COMMENT_BODY+="- [View Latest Check Runs](../../commits/${{ github.event.workflow_run.head_sha || github.sha }}/checks)\n"
+              COMMENT_BODY+="- Verify that mutation testing has completed successfully for this commit\n\n"
             fi
           fi
           
           # Technical details
           COMMENT_BODY+="---\n"
-          COMMENT_BODY+="*Mutation testing evaluates test suite quality by introducing code changes and verifying test failures.*"
+          COMMENT_BODY+="*Mutation testing evaluates test suite effectiveness by introducing controlled code modifications and verifying that existing tests detect these changes.*"
 
           # Update existing comment if found; otherwise, post a new one - using same approach as securityAlertsReview.yml
           if [[ -n "${EXISTING_COMMENT_ID:-}" ]]; then
