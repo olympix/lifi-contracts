@@ -51,12 +51,24 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Processing Info
+      - name: Generate File Arguments
+        id: file-args
         run: |
-          total_files=$(find src/ -name "*.sol" -type f | wc -l)
-          echo "🔄 Running mutation testing on all Solidity files in src/"
-          echo "📁 Found $total_files files to analyze"
-          echo "🚀 Using directory scanning to process all files in single execution"
+          # Get all Solidity files (limit to 100 for CLI compatibility)
+          files=$(find src/ -name "*.sol" -type f | head -100)
+          total_files=$(echo "$files" | wc -l)
+          
+          echo "🔄 Running mutation testing on Solidity files in src/"
+          echo "📁 Found $total_files files to analyze (limited to 100)"
+          
+          # Generate CLI arguments with explicit file paths
+          args="-w . -env"
+          for file in $files; do
+            args="$args -p $file"
+          done
+          
+          echo "MUTATION_ARGS=$args" >> $GITHUB_OUTPUT
+          echo "🚀 Generated arguments with explicit file paths"
 
       - name: Run Olympix Mutation Testing
         uses: olympix/mutation-test-generator@main
@@ -66,12 +78,12 @@ jobs:
           OLYMPIX_GITHUB_COMMIT_HEAD_SHA: ${{ github.sha }}
           OPIX_DEBUG: true
         with:
-          args: -w . -env
+          args: ${{ steps.file-args.outputs.MUTATION_ARGS }}
 
       - name: Success Summary
         run: |
-          total_files=$(find src/ -name "*.sol" -type f | wc -l)
+          total_files=$(find src/ -name "*.sol" -type f | head -100 | wc -l)
           echo "✅ Mutation testing completed successfully"
-          echo "📁 Processed $total_files files via directory scanning"
+          echo "📁 Processed $total_files files via explicit file paths"
           echo "🔍 Results uploaded to GitHub Code Scanning"
           echo "📋 Check the Security tab for mutation testing alerts" 
