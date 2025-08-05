@@ -4,6 +4,7 @@ name: Olympix Static Analysis
 # - detects potential security vulnerabilities and uploads the results to github code scanning
 # - only scans diff (added, renamed, modified) solidity files in src/ instead of the whole repository
 # - ensures security issues are identified before merging, allowing the team to review and discuss findings within the PR
+# - can be manually triggered to scan all files in src/
 
 on:
   pull_request:
@@ -14,6 +15,13 @@ on:
       - ready_for_review
     paths:
       - 'src/**/*.sol'
+  workflow_dispatch:
+    inputs:
+      scan_all_files:
+        description: 'Scan all files (true) or use default behavior (false)'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read # required to fetch repository contents
@@ -30,22 +38,55 @@ jobs:
 
       - name: Get added, renamed, modified Solidity Files
         id: changed-files
+        if: github.event_name == 'pull_request'
         uses: tj-actions/changed-files@v45
         with:
           files: |
             src/**/*.sol
 
-      - name: Convert Changed Files to Args
-        if: steps.changed-files.outputs.any_changed == 'true'
-        id: format-args
-        env:
-          ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+      - name: Determine Files to Scan
+        id: files-to-scan
         run: |
-          args=$(echo "$ALL_CHANGED_FILES" | xargs -n 1 printf -- "-p %s ")
-          echo "ARGS=$args" >> $GITHUB_ENV
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.scan_all_files }}" == "true" ]]; then
+            echo "🔄 Manual trigger: Scanning ALL Solidity files in src/"
+            
+            # Get all Solidity files in src/
+            all_files=$(find src/ -name "*.sol" -type f | tr '\n' ' ')
+            file_count=$(find src/ -name "*.sol" -type f | wc -l)
+            
+            if [[ -n "$all_files" && $file_count -gt 0 ]]; then
+              # Convert to -p arguments format
+              args=$(echo "$all_files" | xargs -n 1 printf -- "-p %s ")
+              echo "ARGS=$args" >> $GITHUB_ENV
+              echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
+              echo "SCAN_TYPE=all_files" >> $GITHUB_OUTPUT
+              echo "✅ Found $file_count Solidity files to analyze"
+            else
+              echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
+              echo "❌ No Solidity files found in src/"
+            fi
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "🔄 PR trigger: Scanning changed files only"
+            
+            if [[ "${{ steps.changed-files.outputs.any_changed }}" == "true" ]]; then
+              # Use changed files from PR
+              args=$(echo "${{ steps.changed-files.outputs.all_changed_files }}" | xargs -n 1 printf -- "-p %s ")
+              echo "ARGS=$args" >> $GITHUB_ENV
+              echo "SHOULD_RUN=true" >> $GITHUB_OUTPUT
+              echo "SCAN_TYPE=changed_files" >> $GITHUB_OUTPUT
+              echo "✅ Found changed Solidity files to analyze"
+            else
+              echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
+              echo "SCAN_TYPE=no_changes" >> $GITHUB_OUTPUT
+              echo "ℹ️ No Solidity files changed in this PR"
+            fi
+          else
+            echo "SHOULD_RUN=false" >> $GITHUB_OUTPUT
+            echo "❌ Unknown trigger type"
+          fi
 
       - name: Run Olympix Integrated Security
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: steps.files-to-scan.outputs.SHOULD_RUN == 'true'
         uses: olympix/integrated-security@main
         env:
           OLYMPIX_API_TOKEN: ${{ secrets.OLYMPIX_API_TOKEN }}
@@ -53,7 +94,21 @@ jobs:
           args: --output-format sarif --output-path ./ ${{ env.ARGS }}
 
       - name: Upload Result to GitHub Code Scanning
-        if: steps.changed-files.outputs.any_changed == 'true'
+        if: steps.files-to-scan.outputs.SHOULD_RUN == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: olympix.sarif
+
+      - name: Summary
+        if: steps.files-to-scan.outputs.SHOULD_RUN == 'true'
+        run: |
+          scan_type="${{ steps.files-to-scan.outputs.SCAN_TYPE }}"
+          if [[ "$scan_type" == "all_files" ]]; then
+            echo "✅ Static analysis completed successfully on ALL Solidity files"
+            echo "📁 Scanned all files in src/ directory"
+          elif [[ "$scan_type" == "changed_files" ]]; then
+            echo "✅ Static analysis completed successfully on changed files"
+            echo "📁 Scanned only files modified in this PR"
+          fi
+          echo "🔍 Results uploaded to GitHub Code Scanning"
+          echo "📋 Check the Security tab for security analysis alerts"
