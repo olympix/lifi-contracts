@@ -326,23 +326,23 @@ jobs:
             MUTATION_SCORE=0
           fi
           
-          # Create professional comment header
-          COMMENT_BODY=$(printf -- "## Mutation Testing Report\n\n")
+          # Create professional comment using the same approach as securityAlertsReview.yml
+          COMMENT_BODY="## Mutation Testing Report\n\n"
           
           # Add status note if showing existing results
           if [[ "${SHOWING_EXISTING_RESULTS:-false}" == "true" ]]; then
-            COMMENT_BODY+=$(printf -- "**Note:** Displaying existing results while current analysis is in progress.\n\n")
+            COMMENT_BODY+="**Note:** Displaying existing results while current analysis is in progress.\n\n"
           fi
           
           # Core statistics table
-          COMMENT_BODY+=$(printf -- "### Test Coverage Analysis\n\n")
-          COMMENT_BODY+=$(printf -- "| Metric | Value |\n")
-          COMMENT_BODY+=$(printf -- "|--------|-------|\n")
-          COMMENT_BODY+=$(printf -- "| **Mutation Score** | %d%% |\n" "$MUTATION_SCORE")
-          COMMENT_BODY+=$(printf -- "| **Total Mutants** | %d |\n" "$TOTAL_MUTANTS")
-          COMMENT_BODY+=$(printf -- "| **Killed Mutants** | %d |\n" "$KILLED_COUNT")
-          COMMENT_BODY+=$(printf -- "| **Surviving Mutants** | %d |\n" "$SURVIVING_COUNT")
-          COMMENT_BODY+=$(printf -- "| **Dismissed Findings** | %d |\n\n" "$DISMISSED_COUNT")
+          COMMENT_BODY+="### Test Coverage Analysis\n\n"
+          COMMENT_BODY+="| Metric | Value |\n"
+          COMMENT_BODY+="|--------|-------|\n"
+          COMMENT_BODY+="| **Mutation Score** | ${MUTATION_SCORE}% |\n"
+          COMMENT_BODY+="| **Total Mutants** | ${TOTAL_MUTANTS} |\n"
+          COMMENT_BODY+="| **Killed Mutants** | ${KILLED_COUNT} |\n"
+          COMMENT_BODY+="| **Surviving Mutants** | ${SURVIVING_COUNT} |\n"
+          COMMENT_BODY+="| **Dismissed Findings** | ${DISMISSED_COUNT} |\n\n"
           
           # Assessment based on mutation score
           if [[ $MUTATION_SCORE -ge 90 ]]; then
@@ -362,60 +362,41 @@ jobs:
             RECOMMENDATION="Test coverage is insufficient. Immediate attention required."
           fi
           
-          COMMENT_BODY+=$(printf -- "### Quality Assessment\n\n")
-          COMMENT_BODY+=$(printf -- "**Coverage Quality:** %s\n\n" "$ASSESSMENT")
-          COMMENT_BODY+=$(printf -- "**Recommendation:** %s\n\n" "$RECOMMENDATION")
+          COMMENT_BODY+="### Quality Assessment\n\n"
+          COMMENT_BODY+="**Coverage Quality:** ${ASSESSMENT}\n\n"
+          COMMENT_BODY+="**Recommendation:** ${RECOMMENDATION}\n\n"
           
           # Action items
           if [[ $SURVIVING_COUNT -gt 0 ]]; then
-            COMMENT_BODY+=$(printf -- "### Required Actions\n\n")
-            COMMENT_BODY+=$(printf -- "- Review %d surviving mutants in [Code Scanning](../../security/code-scanning?tool=Olympix%%20Mutation%%20Testing)\n" "$SURVIVING_COUNT")
-            COMMENT_BODY+=$(printf -- "- Add test cases to eliminate coverage gaps\n")
-            COMMENT_BODY+=$(printf -- "- Validate business logic assertions in existing tests\n\n")
+            COMMENT_BODY+="### Required Actions\n\n"
+            COMMENT_BODY+="- Review ${SURVIVING_COUNT} surviving mutants in [Code Scanning](../../security/code-scanning?tool=Olympix%20Mutation%20Testing)\n"
+            COMMENT_BODY+="- Add test cases to eliminate coverage gaps\n"
+            COMMENT_BODY+="- Validate business logic assertions in existing tests\n\n"
           else
             if [[ $TOTAL_MUTANTS -gt 0 ]]; then
-              COMMENT_BODY+=$(printf -- "### Status\n\n")
-              COMMENT_BODY+=$(printf -- "All generated mutants have been successfully eliminated by the test suite.\n\n")
+              COMMENT_BODY+="### Status\n\n"
+              COMMENT_BODY+="All generated mutants have been successfully eliminated by the test suite.\n\n"
             else
-              COMMENT_BODY+=$(printf -- "### Status\n\n")
-              COMMENT_BODY+=$(printf -- "No mutation testing results available. This may indicate a configuration issue or that no testable code was found.\n\n")
+              COMMENT_BODY+="### Status\n\n"
+              COMMENT_BODY+="No mutation testing results available. This may indicate a configuration issue or that no testable code was found.\n\n"
             fi
           fi
           
           # Technical details
-          COMMENT_BODY+=$(printf -- "---\n")
-          COMMENT_BODY+=$(printf -- "*Mutation testing evaluates test suite quality by introducing code changes and verifying test failures.*")
+          COMMENT_BODY+="---\n"
+          COMMENT_BODY+="*Mutation testing evaluates test suite quality by introducing code changes and verifying test failures.*"
 
-          # Properly escape JSON for API call
-          COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
-          
-          # Update existing comment if found; otherwise, post a new one.
+          # Update existing comment if found; otherwise, post a new one - using same approach as securityAlertsReview.yml
           if [[ -n "${EXISTING_COMMENT_ID:-}" ]]; then
             echo "Updating existing comment ID: $EXISTING_COMMENT_ID"
-            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -w "%{http_code}" -X PATCH \
-              -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
-              -d @- \
-              "https://api.github.com/repos/${{ github.repository }}/issues/comments/${EXISTING_COMMENT_ID}")
-            
-            HTTP_CODE="${RESPONSE: -3}"
-            RESPONSE_BODY="${RESPONSE%???}"
-            echo "Update response code: $HTTP_CODE"
-            if [[ "$HTTP_CODE" != "200" ]]; then
-              echo "Update failed: ${RESPONSE_BODY:0:200}..."
-            fi
+            curl -s -X PATCH -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "{\"body\": \"$COMMENT_BODY\"}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/${EXISTING_COMMENT_ID}"
           else
             echo "Posting new comment to PR $PR_NUMBER..."
-            RESPONSE=$(echo "$COMMENT_JSON" | curl -s -w "%{http_code}" -X POST \
-              -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
-              -d @- \
-              "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments")
-            
-            HTTP_CODE="${RESPONSE: -3}"
-            RESPONSE_BODY="${RESPONSE%???}"
-            echo "Post response code: $HTTP_CODE"
-            if [[ "$HTTP_CODE" != "201" ]]; then
-              echo "Post failed: ${RESPONSE_BODY:0:200}..."
-            fi
+            curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
+              -d "{\"body\": \"$COMMENT_BODY\"}" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
           fi
 
  
