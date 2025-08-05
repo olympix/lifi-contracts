@@ -49,13 +49,13 @@ jobs:
             exit 0
           fi
           
-          # Split files into batches of 20 (reduced from 100)
+          # Split files into batches of 100 (maximum allowed by CLI)
           file_array=($files)
           total_files=${#file_array[@]}
           echo "Total files found: $total_files"
           
           batches="["
-          batch_size=20
+          batch_size=100
           for ((i=0; i<total_files; i+=batch_size)); do
             batch_files=("${file_array[@]:i:batch_size}")
             batch_args=$(printf -- "-p %s " "${batch_files[@]}")
@@ -68,7 +68,7 @@ jobs:
           batches+="]"
           
           echo "BATCHES_JSON=$batches" >> $GITHUB_OUTPUT
-          echo "Created $((((total_files-1)/batch_size)+1)) batches of up to 20 files each"
+          echo "Created $((((total_files-1)/batch_size)+1)) batches of up to 100 files each"
 
   # Process each batch sequentially with delays
   mutation-testing-batches:
