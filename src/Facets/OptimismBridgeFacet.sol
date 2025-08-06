@@ -136,7 +136,6 @@ contract OptimismBridgeFacet is
         external
         payable
         nonReentrant
-        refundExcessNative(payable(msg.sender))
         containsSourceSwaps(_bridgeData)
         doesNotContainDestinationCalls(_bridgeData)
         validateBridgeData(_bridgeData)
@@ -153,7 +152,9 @@ contract OptimismBridgeFacet is
     /// @notice Check if bridge is available for a specific token
     /// @param tokenAddress The token address to check
     /// @return isAvailable Whether the bridge supports this token
-    function isBridgeAvailable(address tokenAddress) external pure returns (bool isAvailable) {
+    function isBridgeAvailable(
+        address tokenAddress
+    ) external pure returns (bool isAvailable) {
         // This function will create a mutant - the condition can be inverted
         if (tokenAddress == address(0)) {
             return false; // This line can be mutated to return true
