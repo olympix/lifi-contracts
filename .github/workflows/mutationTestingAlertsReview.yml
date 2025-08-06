@@ -108,51 +108,100 @@ jobs:
           DATA_SOURCE="none"
           CHECK_RUN_ID=""
           
-          # Determine check run ID based on mode
-          TEST_MODE="${{ github.event.inputs.test_mode || 'false' }}"
-          
-          if [[ "$TEST_MODE" == "true" ]]; then
-            echo "TEST MODE: Finding latest mutation-results check run..."
-            CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=50" || echo '{"check_runs":[]}')
-            CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results" and .status == "completed") | .id' | head -1)
+          # For pull request events, always use real mode and poll for completion
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PULL REQUEST MODE: Waiting for mutation testing check run to complete..."
             
-            if [[ -z "$CHECK_RUN_ID" || "$CHECK_RUN_ID" == "null" ]]; then
-              echo "No recent check run found, using fallback ID"
-              CHECK_RUN_ID="47469978380"
-              DATA_SOURCE="test_mode_fallback"
-            else
-              echo "Found latest check run ID: $CHECK_RUN_ID"
-              DATA_SOURCE="test_mode_latest"
-            fi
-          else
-            echo "REAL MODE: Finding check run for PR commit..."
+            # Get commit SHA for the PR
+            COMMIT_SHA="${{ github.sha }}"
+            echo "Monitoring commit: ${COMMIT_SHA:0:8}"
             
-            # Get commit SHA
-            if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-              COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
-            elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              COMMIT_SHA="${{ github.sha }}"
-            else
-              PR_DETAILS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}")
-              COMMIT_SHA=$(echo "$PR_DETAILS" | jq -r '.head.sha // ""')
-            fi
+            # Poll for check run completion (25 minutes = 1500 seconds)
+            MAX_WAIT_TIME=1500
+            POLL_INTERVAL=60
+            ELAPSED_TIME=0
             
-            if [[ -n "$COMMIT_SHA" ]]; then
-              echo "Looking for check run on commit: ${COMMIT_SHA:0:8}"
+            while [[ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]]; do
+              echo "Checking for mutation-results check run... (${ELAPSED_TIME}s elapsed)"
+              
               CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
                 "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
-              CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .id' | head -1)
+              CHECK_RUN_DATA=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | {id: .id, status: .status, conclusion: .conclusion}' | head -1)
               
-              if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" != "null" ]]; then
-                echo "Found check run ID: $CHECK_RUN_ID"
-                DATA_SOURCE="pr_commit"
+              if [[ -n "$CHECK_RUN_DATA" && "$CHECK_RUN_DATA" != "null" ]]; then
+                CHECK_RUN_ID=$(echo "$CHECK_RUN_DATA" | jq -r '.id // ""')
+                CHECK_STATUS=$(echo "$CHECK_RUN_DATA" | jq -r '.status // ""')
+                CHECK_CONCLUSION=$(echo "$CHECK_RUN_DATA" | jq -r '.conclusion // ""')
+                
+                echo "Found check run ID: $CHECK_RUN_ID, status: $CHECK_STATUS, conclusion: $CHECK_CONCLUSION"
+                
+                if [[ "$CHECK_STATUS" == "completed" ]]; then
+                  echo "Check run completed successfully!"
+                  DATA_SOURCE="pr_commit"
+                  break
+                else
+                  echo "Check run still in progress (status: $CHECK_STATUS)..."
+                fi
               else
-                echo "No check run found for commit ${COMMIT_SHA:0:8}"
+                echo "No mutation-results check run found yet..."
+              fi
+              
+              if [[ $ELAPSED_TIME -lt $MAX_WAIT_TIME ]]; then
+                echo "Waiting ${POLL_INTERVAL} seconds before next check..."
+                sleep $POLL_INTERVAL
+                ELAPSED_TIME=$((ELAPSED_TIME + POLL_INTERVAL))
+              fi
+            done
+            
+            if [[ $ELAPSED_TIME -ge $MAX_WAIT_TIME ]]; then
+              echo "Timeout: No completed mutation testing check run found after 25 minutes"
+              echo "This may indicate the mutation testing workflow hasn't started or is taking longer than expected"
+            fi
+          else
+            # For other event types, use the existing logic
+            TEST_MODE="${{ github.event.inputs.test_mode || 'false' }}"
+            
+            if [[ "$TEST_MODE" == "true" ]]; then
+              echo "TEST MODE: Finding latest mutation-results check run..."
+              CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=50" || echo '{"check_runs":[]}')
+              CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results" and .status == "completed") | .id' | head -1)
+              
+              if [[ -z "$CHECK_RUN_ID" || "$CHECK_RUN_ID" == "null" ]]; then
+                echo "No recent check run found, using fallback ID"
+                CHECK_RUN_ID="47469978380"
+                DATA_SOURCE="test_mode_fallback"
+              else
+                echo "Found latest check run ID: $CHECK_RUN_ID"
+                DATA_SOURCE="test_mode_latest"
               fi
             else
-              echo "Could not determine commit SHA"
+              echo "REAL MODE: Finding check run for commit..."
+              
+              # Get commit SHA
+              if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+                COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+              else
+                PR_DETAILS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}")
+                COMMIT_SHA=$(echo "$PR_DETAILS" | jq -r '.head.sha // ""')
+              fi
+              
+              if [[ -n "$COMMIT_SHA" ]]; then
+                echo "Looking for check run on commit: ${COMMIT_SHA:0:8}"
+                CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
+                CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .id' | head -1)
+                
+                if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" != "null" ]]; then
+                  echo "Found check run ID: $CHECK_RUN_ID"
+                  DATA_SOURCE="pr_commit"
+                else
+                  echo "No check run found for commit ${COMMIT_SHA:0:8}"
+                fi
+              else
+                echo "Could not determine commit SHA"
+              fi
             fi
           fi
           
