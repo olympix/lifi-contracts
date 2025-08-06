@@ -293,15 +293,15 @@ jobs:
           if [[ "$DATA_SOURCE" == "check_run" ]]; then
             COMMENT_BODY+="**Note:** Generated from real check run data"
             if [[ -n "$CHECK_RUN_ID" ]]; then
-              COMMENT_BODY+=" ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/actions/runs/$CHECK_RUN_ID))"
+              COMMENT_BODY+=" ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/runs/$CHECK_RUN_ID))"
             fi
             COMMENT_BODY+="\n\n"
           elif [[ "$DATA_SOURCE" == "code_scanning" ]]; then
             COMMENT_BODY+="**Note:** Generated from code scanning alerts (limited data available)\n\n"
           elif [[ "$DATA_SOURCE" == "test_mode_latest" ]]; then
-            COMMENT_BODY+="**Note:** TEST MODE - Generated from latest check run data ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/actions/runs/$CHECK_RUN_ID))\n\n"
+            COMMENT_BODY+="**Note:** TEST MODE - Generated from latest check run data ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/runs/$CHECK_RUN_ID))\n\n"
           elif [[ "$DATA_SOURCE" == "test_mode_fallback" ]]; then
-            COMMENT_BODY+="**Note:** TEST MODE - Generated from fallback check run data ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/actions/runs/$CHECK_RUN_ID))\n\n"
+            COMMENT_BODY+="**Note:** TEST MODE - Generated from fallback check run data ([Check Run $CHECK_RUN_ID](https://github.com/${{ github.repository }}/runs/$CHECK_RUN_ID))\n\n"
           else
             COMMENT_BODY+="**Note:** No mutation testing data available\n\n"
           fi
