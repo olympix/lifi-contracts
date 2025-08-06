@@ -73,7 +73,7 @@ jobs:
           fi
           
           # Wait for mutation-results check run with timeout
-          MAX_WAIT=1200  # 20 minutes max wait
+          MAX_WAIT=1500  # 25 minutes max wait
           WAIT_TIME=0
           SLEEP_INTERVAL=10
           FOUND_CHECK_RUN=false
@@ -112,11 +112,11 @@ jobs:
             if [[ "$FOUND_CHECK_RUN" == "false" ]]; then
               echo "🔍 Looking for latest mutation-results check run..."
               ALL_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/check-runs?check_name=mutation-results&per_page=100")
+                "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
               
               # Debug: Show what we got
-              echo "Debug: API response preview:"
-              echo "$ALL_CHECK_RUNS" | head -5
+              echo "Debug: API response preview (first 10 check runs):"
+              echo "$ALL_CHECK_RUNS" | jq '.check_runs[]? | {name: .name, status: .status, conclusion: .conclusion}' | head -10
               
               LATEST_CHECK_RUN=$(echo "$ALL_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | select(.status != null) | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha}' | head -1)
               
@@ -170,12 +170,15 @@ jobs:
         run: |
           echo "🚀 Using latest mutation-results check run immediately..."
           
-          # Get latest check run directly
+          # Get latest check run directly (without check_name filter)
           LATEST_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/check-runs?check_name=mutation-results&per_page=10")
+            "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
           
-          echo "Debug: Latest check runs API response:"
-          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -3
+          echo "Debug: All check runs API response:"
+          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | {name: .name, id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -10
+          
+          echo "Debug: Filtering for mutation-results..."
+          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | select(.name == "mutation-results") | {name: .name, id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -3
           
           LATEST_CHECK_RUN=$(echo "$LATEST_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -1)
           
