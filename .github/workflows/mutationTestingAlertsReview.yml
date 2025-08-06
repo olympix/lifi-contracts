@@ -5,7 +5,7 @@ name: Mutation Testing PR Summary
 # - shows how many mutants were dismissed with proper justification
 # - reports net unresolved findings that need attention
 # - provides a clear overview of test coverage quality for the PR
-# - leaves a summary comment starting with "🧪 Mutation Testing Summary"
+# - leaves a summary comment starting with "## Mutation Testing Report"
 
 on:
   pull_request:
@@ -26,13 +26,8 @@ on:
         description: 'PR number to generate summary for'
         required: true
         type: string
-      skip_check_run_wait:
-        description: 'Show empty results for mutation-results check run'
-        required: false
-        default: true
-        type: boolean
-      use_latest_run:
-        description: 'Immediately use latest check run without waiting'
+      test_mode:
+        description: 'Test mode: use latest check run from list instead of PR commit'
         required: false
         default: false
         type: boolean
@@ -52,199 +47,6 @@ jobs:
     steps:
 
       - uses: actions/checkout@v4
-
-      - name: Wait for mutation-results check run to complete
-        if: (github.event_name != 'workflow_dispatch' || github.event.inputs.skip_check_run_wait != 'true') && github.event.inputs.use_latest_run != 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Waiting for mutation-results check run to complete..."
-          
-          # Determine commit SHA if available
-          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
-            echo "Target commit from workflow_run: $COMMIT_SHA"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            COMMIT_SHA="${{ github.sha }}"
-            echo "Target commit from pull_request: $COMMIT_SHA"
-          else
-            COMMIT_SHA=""
-            echo "No specific commit provided, will look for latest check run"
-          fi
-          
-          # Wait for mutation-results check run with timeout
-          MAX_WAIT=1500  # 25 minutes max wait
-          WAIT_TIME=0
-          SLEEP_INTERVAL=10
-          FOUND_CHECK_RUN=false
-          
-          while [[ $WAIT_TIME -lt $MAX_WAIT ]]; do
-            echo "Checking for mutation-results check run (${WAIT_TIME}s elapsed)..."
-            
-            # First priority: Look for check run on specific commit if provided
-            if [[ -n "$COMMIT_SHA" ]]; then
-              echo "Looking for check run on commit: ${COMMIT_SHA:0:8}..."
-              COMMIT_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
-              
-              MUTATION_STATUS=$(echo "$COMMIT_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .status' 2>/dev/null || echo "")
-              MUTATION_CONCLUSION=$(echo "$COMMIT_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .conclusion' 2>/dev/null || echo "")
-              
-              if [[ -n "$MUTATION_STATUS" ]]; then
-                echo "Found mutation-results check run on target commit:"
-                echo "  Commit: ${COMMIT_SHA:0:8}"
-                echo "  Status: $MUTATION_STATUS"
-                echo "  Conclusion: $MUTATION_CONCLUSION"
-                FOUND_CHECK_RUN=true
-                
-                if [[ "$MUTATION_STATUS" == "completed" ]]; then
-                  echo "Target check run completed with conclusion: $MUTATION_CONCLUSION"
-                  break
-                elif [[ "$MUTATION_STATUS" == "in_progress" || "$MUTATION_STATUS" == "queued" ]]; then
-                  echo "Target check run is still $MUTATION_STATUS..."
-                fi
-              else
-                echo "No mutation-results check run found on target commit yet"
-              fi
-            fi
-            
-            # Fallback: Look for latest check run if no specific commit or not found on target commit
-            if [[ "$FOUND_CHECK_RUN" == "false" ]]; then
-              echo "Looking for latest mutation-results check run..."
-              ALL_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
-              
-              # Debug: Show what we got
-              echo "Debug: API response preview (first 10 check runs):"
-              echo "$ALL_CHECK_RUNS" | jq '.check_runs[]? | {name: .name, status: .status, conclusion: .conclusion}' | head -10
-              
-              LATEST_CHECK_RUN=$(echo "$ALL_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | select(.status != null) | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha}' | head -1)
-              
-              if [[ -n "$LATEST_CHECK_RUN" && "$LATEST_CHECK_RUN" != "null" ]]; then
-                MUTATION_STATUS=$(echo "$LATEST_CHECK_RUN" | jq -r '.status // ""')
-                MUTATION_CONCLUSION=$(echo "$LATEST_CHECK_RUN" | jq -r '.conclusion // ""')
-                CHECK_RUN_SHA=$(echo "$LATEST_CHECK_RUN" | jq -r '.head_sha // ""')
-                
-                echo "Found latest mutation-results check run:"
-                echo "  Commit: ${CHECK_RUN_SHA:0:8}"
-                echo "  Status: $MUTATION_STATUS"
-                echo "  Conclusion: $MUTATION_CONCLUSION"
-                FOUND_CHECK_RUN=true
-                
-                if [[ "$MUTATION_STATUS" == "completed" ]]; then
-                  echo "Latest check run completed with conclusion: $MUTATION_CONCLUSION"
-                  break
-                elif [[ "$MUTATION_STATUS" == "in_progress" || "$MUTATION_STATUS" == "queued" ]]; then
-                  echo "Latest check run is still $MUTATION_STATUS..."
-                fi
-              else
-                echo "No mutation-results check run found in recent history"
-              fi
-            fi
-            
-            if [[ "$FOUND_CHECK_RUN" == "false" ]]; then
-              echo "No mutation-results check run found, waiting..."
-            fi
-            
-            sleep $SLEEP_INTERVAL
-            WAIT_TIME=$((WAIT_TIME + SLEEP_INTERVAL))
-            FOUND_CHECK_RUN=false  # Reset for next iteration
-          done
-          
-          if [[ $WAIT_TIME -ge $MAX_WAIT ]]; then
-            echo "Timeout reached. Proceeding with existing results..."
-            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
-          fi
-
-      - name: Skip check run wait (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.skip_check_run_wait == 'true'
-        run: |
-          echo "Skipping check run wait for manual dispatch run"
-          echo "Proceeding immediately with available results"
-          echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
-
-      - name: Use latest check run immediately
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.use_latest_run == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Using latest mutation-results check run immediately..."
-          
-          # Get latest check run directly (without check_name filter)
-          LATEST_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
-          
-          echo "Debug: All check runs API response:"
-          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | {name: .name, id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -10
-          
-          echo "Debug: Available check run names:"
-          echo "$LATEST_CHECK_RUNS" | jq -r '.check_runs[]? | .name' | sort | uniq -c
-          
-          echo "Debug: Filtering for mutation-results..."
-          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | select(.name == "mutation-results") | {name: .name, id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -3
-          
-          echo "Debug: Trying alternative check run names..."
-          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | select(.name | test("mutation"; "i")) | {name: .name, id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -3
-          
-          LATEST_CHECK_RUN=$(echo "$LATEST_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -1)
-          
-          if [[ -n "$LATEST_CHECK_RUN" && "$LATEST_CHECK_RUN" != "null" ]]; then
-            MUTATION_STATUS=$(echo "$LATEST_CHECK_RUN" | jq -r '.status // ""')
-            MUTATION_CONCLUSION=$(echo "$LATEST_CHECK_RUN" | jq -r '.conclusion // ""')
-            CHECK_RUN_SHA=$(echo "$LATEST_CHECK_RUN" | jq -r '.head_sha // ""')
-            CHECK_RUN_ID=$(echo "$LATEST_CHECK_RUN" | jq -r '.id // ""')
-            
-            echo "Found latest mutation-results check run:"
-            echo "  ID: $CHECK_RUN_ID"
-            echo "  Commit: ${CHECK_RUN_SHA:0:8}"
-            echo "  Status: $MUTATION_STATUS"
-            echo "  Conclusion: $MUTATION_CONCLUSION"
-            
-            # Extract mutation data if check run is completed
-            if [[ "$MUTATION_STATUS" == "completed" ]]; then
-              echo "Extracting mutation data from completed check run..."
-              
-              RAW_OUTPUT=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/check-runs/${CHECK_RUN_ID}" \
-                | jq -r '.output.text // ""')
-              
-              if [[ -n "$RAW_OUTPUT" && "$RAW_OUTPUT" != "" && "$RAW_OUTPUT" != "null" ]]; then
-                # Extract values using grep/sed (reliable approach)
-                TOTAL_MUTANTS=$(echo "$RAW_OUTPUT" | grep '"TotalMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
-                KILLED_COUNT=$(echo "$RAW_OUTPUT" | grep '"KilledMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
-                SURVIVING_COUNT=$(echo "$RAW_OUTPUT" | grep '"SurvivedMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
-                MUTATION_SCORE=$(echo "$RAW_OUTPUT" | grep '"ScorePercentage"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
-                
-                # Validate we got valid data
-                if [[ "$TOTAL_MUTANTS" =~ ^[0-9]+$ && "$TOTAL_MUTANTS" -gt 0 ]]; then
-                  echo "Successfully extracted mutation data:"
-                  echo "  Total Mutants: $TOTAL_MUTANTS"
-                  echo "  Killed: $KILLED_COUNT"
-                  echo "  Survived: $SURVIVING_COUNT"
-                  echo "  Score: $MUTATION_SCORE%"
-                  
-                  # Save the extracted data
-                  echo "TOTAL_MUTANTS=$TOTAL_MUTANTS" >> $GITHUB_ENV
-                  echo "KILLED_COUNT=$KILLED_COUNT" >> $GITHUB_ENV
-                  echo "SURVIVING_COUNT=$SURVIVING_COUNT" >> $GITHUB_ENV
-                  echo "DISMISSED_COUNT=0" >> $GITHUB_ENV
-                  echo "MUTATION_SCORE=$MUTATION_SCORE" >> $GITHUB_ENV
-                  echo "DATA_SOURCE=check_run" >> $GITHUB_ENV
-                  echo "CHECK_RUN_ID=$CHECK_RUN_ID" >> $GITHUB_ENV
-                else
-                  echo "Could not extract valid mutation data from check run output"
-                fi
-              else
-                echo "No output text found in check run"
-              fi
-            fi
-            
-            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
-          else
-            echo "No mutation-results check run found in recent history"
-            echo "Will proceed with any available code scanning results"
-            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
-          fi
 
       - name: Get PR Number
         env:
@@ -291,143 +93,126 @@ jobs:
           echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
           echo "Using PR number: $PR_NUMBER"
 
-      - name: Extract Mutation Testing Data from Check Run
+      - name: Extract Mutation Testing Data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Extracting mutation testing data from check run..."
+          echo "Extracting mutation testing data..."
           
-          # Skip if data was already extracted in previous step
-          if [[ -n "${DATA_SOURCE:-}" && "${DATA_SOURCE}" == "check_run" ]]; then
-            echo "Mutation data already extracted from check run (${TOTAL_MUTANTS} mutants, ${MUTATION_SCORE}% score)"
-            echo "Skipping duplicate extraction..."
-            exit 0
-          fi
-          
-          # Step 1: Find the latest mutation-results check run
-          echo "Finding latest mutation-results check run..."
-          
-          # Determine commit SHA
-          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
-            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
-          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            COMMIT_SHA="${{ github.sha }}"
-          else
-            COMMIT_SHA=""
-          fi
-          
-          # Try to get check run from specific commit first
-          CHECK_RUN_ID=""
-          if [[ -n "$COMMIT_SHA" ]]; then
-            echo "Looking for check run on commit: ${COMMIT_SHA:0:8}..."
-            COMMIT_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
-            
-            CHECK_RUN_ID=$(echo "$COMMIT_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .id' | head -1)
-          fi
-          
-          # Fallback to latest check run if not found on specific commit
-          if [[ -z "$CHECK_RUN_ID" || "$CHECK_RUN_ID" == "null" ]]; then
-            echo "Looking for latest mutation-results check run..."
-            ALL_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
-            
-            CHECK_RUN_ID=$(echo "$ALL_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .id' | head -1)
-          fi
-          
-          # Initialize mutation data variables
+          # Initialize variables
           TOTAL_MUTANTS=0
           KILLED_COUNT=0
           SURVIVING_COUNT=0
           DISMISSED_COUNT=0
           MUTATION_SCORE=0
           DATA_SOURCE="none"
+          CHECK_RUN_ID=""
           
-          # Step 2: Extract data from check run if found
-          if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" != "null" ]]; then
-            echo "Found mutation-results check run ID: $CHECK_RUN_ID"
+          # Determine check run ID based on mode
+          TEST_MODE="${{ github.event.inputs.test_mode || 'false' }}"
+          
+          if [[ "$TEST_MODE" == "true" ]]; then
+            echo "TEST MODE: Finding latest mutation-results check run..."
+            CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=50" || echo '{"check_runs":[]}')
+            CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results" and .status == "completed") | .id' | head -1)
             
-            # Get the check run output text
+            if [[ -z "$CHECK_RUN_ID" || "$CHECK_RUN_ID" == "null" ]]; then
+              echo "No recent check run found, using fallback ID"
+              CHECK_RUN_ID="47469978380"
+              DATA_SOURCE="test_mode_fallback"
+            else
+              echo "Found latest check run ID: $CHECK_RUN_ID"
+              DATA_SOURCE="test_mode_latest"
+            fi
+          else
+            echo "REAL MODE: Finding check run for PR commit..."
+            
+            # Get commit SHA
+            if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+              COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              COMMIT_SHA="${{ github.sha }}"
+            else
+              PR_DETAILS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}")
+              COMMIT_SHA=$(echo "$PR_DETAILS" | jq -r '.head.sha // ""')
+            fi
+            
+            if [[ -n "$COMMIT_SHA" ]]; then
+              echo "Looking for check run on commit: ${COMMIT_SHA:0:8}"
+              CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/commits/${COMMIT_SHA}/check-runs")
+              CHECK_RUN_ID=$(echo "$CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | .id' | head -1)
+              
+              if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" != "null" ]]; then
+                echo "Found check run ID: $CHECK_RUN_ID"
+                DATA_SOURCE="pr_commit"
+              else
+                echo "No check run found for commit ${COMMIT_SHA:0:8}"
+              fi
+            else
+              echo "Could not determine commit SHA"
+            fi
+          fi
+          
+          # Extract data from check run if found
+          if [[ -n "$CHECK_RUN_ID" && "$CHECK_RUN_ID" != "null" ]]; then
+            echo "Extracting data from check run $CHECK_RUN_ID..."
             RAW_OUTPUT=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
               "https://api.github.com/repos/${{ github.repository }}/check-runs/${CHECK_RUN_ID}" \
               | jq -r '.output.text // ""')
             
-            if [[ -n "$RAW_OUTPUT" && "$RAW_OUTPUT" != "" && "$RAW_OUTPUT" != "null" ]]; then
-              echo "Found check run output, extracting mutation data..."
-              
-              # Extract values using grep/sed (reliable approach)
+            if [[ -n "$RAW_OUTPUT" && "$RAW_OUTPUT" != "null" ]]; then
+              # Extract values using grep/sed
               TOTAL_MUTANTS=$(echo "$RAW_OUTPUT" | grep '"TotalMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
               KILLED_COUNT=$(echo "$RAW_OUTPUT" | grep '"KilledMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
               SURVIVING_COUNT=$(echo "$RAW_OUTPUT" | grep '"SurvivedMutationsCount"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
               MUTATION_SCORE=$(echo "$RAW_OUTPUT" | grep '"ScorePercentage"' | head -1 | sed 's/.*: \([0-9]*\).*/\1/' || echo "0")
               
-              # Validate we got valid data
               if [[ "$TOTAL_MUTANTS" =~ ^[0-9]+$ && "$TOTAL_MUTANTS" -gt 0 ]]; then
-                echo "Successfully extracted mutation data from check run:"
-                echo "  Total Mutants: $TOTAL_MUTANTS"
-                echo "  Killed: $KILLED_COUNT"
-                echo "  Survived: $SURVIVING_COUNT"
-                echo "  Score: $MUTATION_SCORE%"
+                echo "Extracted: $TOTAL_MUTANTS total, $KILLED_COUNT killed, $SURVIVING_COUNT survived, $MUTATION_SCORE% score"
                 DATA_SOURCE="check_run"
               else
-                echo "Could not extract valid mutation data from check run output"
+                echo "Invalid data extracted, falling back to code scanning"
                 TOTAL_MUTANTS=0
                 KILLED_COUNT=0
                 SURVIVING_COUNT=0
                 MUTATION_SCORE=0
+                DATA_SOURCE="none"
               fi
             else
-              echo "No output text found in check run"
+              echo "No output text in check run"
+              DATA_SOURCE="none"
             fi
-          else
-            echo "No mutation-results check run found"
           fi
           
-          # Step 3: Fallback to code scanning alerts if check run data not available
+          # Fallback to code scanning if no check run data
           if [[ "$DATA_SOURCE" == "none" ]]; then
-            echo "Falling back to code scanning alerts..."
+            echo "Using code scanning alerts as fallback..."
             
-            # Fetch mutation testing alerts from code scanning
             MUTATIONS_PR=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts?pr=${PR_NUMBER}")
-            
             MUTATIONS_ALL=$(curl -s -H "Authorization: token ${GITHUB_TOKEN}" \
               "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts?per_page=100&state=open")
             
-            # Use the source with results
             PR_COUNT=$(echo "$MUTATIONS_PR" | jq 'length // 0')
             ALL_COUNT=$(echo "$MUTATIONS_ALL" | jq 'length // 0')
             
-            if [[ $PR_COUNT -gt 0 ]]; then
-              MUTATIONS="$MUTATIONS_PR"
-              echo "Using PR-specific alerts ($PR_COUNT results)"
-            else
-              MUTATIONS="$MUTATIONS_ALL"
-              echo "Using all recent alerts ($ALL_COUNT results)"
-            fi
-            
-            # Filter for Olympix Mutation Testing
+            MUTATIONS=$(if [[ $PR_COUNT -gt 0 ]]; then echo "$MUTATIONS_PR"; else echo "$MUTATIONS_ALL"; fi)
             MUTATIONS=$(echo "$MUTATIONS" | jq -c '[ .[] | select(.tool.name == "Olympix Mutation Testing") ]' || echo "[]")
             
-            # Extract surviving and dismissed mutants
-            SURVIVING_MUTANTS=$(echo "$MUTATIONS" | jq -c '[.[] | select(.state == "open") ]' || echo "[]")
-            DISMISSED_MUTANTS=$(echo "$MUTATIONS" | jq -c '[.[] | select(.state == "dismissed")]' || echo "[]")
-            
-            SURVIVING_COUNT=$(echo "$SURVIVING_MUTANTS" | jq -r 'length')
-            DISMISSED_COUNT=$(echo "$DISMISSED_MUTANTS" | jq -r 'length')
+            SURVIVING_COUNT=$(echo "$MUTATIONS" | jq -r '[.[] | select(.state == "open")] | length')
+            DISMISSED_COUNT=$(echo "$MUTATIONS" | jq -r '[.[] | select(.state == "dismissed")] | length')
             TOTAL_MUTANTS=$((SURVIVING_COUNT + DISMISSED_COUNT))
-            KILLED_COUNT=0  # Not available from code scanning
+            KILLED_COUNT=0
+            MUTATION_SCORE=0
             
             if [[ "$TOTAL_MUTANTS" -gt 0 ]]; then
-              MUTATION_SCORE=0  # Cannot calculate accurate score from alerts alone
               DATA_SOURCE="code_scanning"
-              echo "Extracted data from code scanning alerts:"
-              echo "  Total Mutants: $TOTAL_MUTANTS (surviving + dismissed)"
-              echo "  Survived: $SURVIVING_COUNT"
-              echo "  Dismissed: $DISMISSED_COUNT"
+              echo "Found $TOTAL_MUTANTS mutants from code scanning ($SURVIVING_COUNT surviving, $DISMISSED_COUNT dismissed)"
             else
-              echo "No mutation testing data found in code scanning alerts"
-              DATA_SOURCE="none"
+              echo "No mutation data found"
             fi
           fi
           
@@ -440,7 +225,7 @@ jobs:
           echo "DATA_SOURCE=$DATA_SOURCE" >> $GITHUB_ENV
           echo "CHECK_RUN_ID=$CHECK_RUN_ID" >> $GITHUB_ENV
           
-          echo "Mutation data extraction completed! Source: $DATA_SOURCE"
+          echo "Extraction completed - Source: $DATA_SOURCE"
 
       - name: Find Existing PR Comment
         id: find_comment
@@ -513,8 +298,12 @@ jobs:
             COMMENT_BODY+="\n\n"
           elif [[ "$DATA_SOURCE" == "code_scanning" ]]; then
             COMMENT_BODY+="**Note:** Generated from code scanning alerts (limited data available)\n\n"
-          elif [[ "${SHOWING_EXISTING_RESULTS:-false}" == "true" ]]; then
-            COMMENT_BODY+="**Note:** Displaying existing results while current analysis is in progress.\n\n"
+          elif [[ "$DATA_SOURCE" == "test_mode_latest" ]]; then
+            COMMENT_BODY+="**Note:** TEST MODE - Generated from latest check run data (ID: $CHECK_RUN_ID)\n\n"
+          elif [[ "$DATA_SOURCE" == "test_mode_fallback" ]]; then
+            COMMENT_BODY+="**Note:** TEST MODE - Generated from fallback check run data (ID: $CHECK_RUN_ID)\n\n"
+          else
+            COMMENT_BODY+="**Note:** No mutation testing data available\n\n"
           fi
           
           # Core statistics table
@@ -588,6 +377,4 @@ jobs:
             curl -s -X POST -H "Authorization: token ${GITHUB_TOKEN}" -H "Content-Type: application/json" \
               -d "{\"body\": \"$COMMENT_BODY\"}" \
               "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
-          fi
-
- 
+          fi 
