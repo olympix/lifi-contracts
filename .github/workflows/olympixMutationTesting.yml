@@ -144,7 +144,7 @@ jobs:
           echo "📊 File breakdown: $total_files included, $excluded_count excluded (total: $all_files)"
           
           # Generate CLI arguments with explicit file paths
-          args="-w . -env"
+          args="generate-mutation-tests -w . -env"
           for file in $files; do
             args="$args -p $file"
           done
