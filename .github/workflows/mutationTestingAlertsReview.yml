@@ -27,9 +27,14 @@ on:
         required: true
         type: string
       skip_check_run_wait:
-        description: 'Skip waiting for mutation-results check run to complete'
+        description: 'Show empty results for mutation-results check run'
         required: false
         default: true
+        type: boolean
+      use_latest_run:
+        description: 'Immediately use latest check run without waiting'
+        required: false
+        default: false
         type: boolean
 
 permissions:
@@ -49,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Wait for mutation-results check run to complete
-        if: github.event_name != 'workflow_dispatch' || github.event.inputs.skip_check_run_wait != 'true'
+        if: (github.event_name != 'workflow_dispatch' || github.event.inputs.skip_check_run_wait != 'true') && github.event.inputs.use_latest_run != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -68,7 +73,7 @@ jobs:
           fi
           
           # Wait for mutation-results check run with timeout
-          MAX_WAIT=300  # 5 minutes max wait
+          MAX_WAIT=1200  # 20 minutes max wait
           WAIT_TIME=0
           SLEEP_INTERVAL=10
           FOUND_CHECK_RUN=false
@@ -107,7 +112,11 @@ jobs:
             if [[ "$FOUND_CHECK_RUN" == "false" ]]; then
               echo "🔍 Looking for latest mutation-results check run..."
               ALL_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${{ github.repository }}/check-runs?per_page=100")
+                "https://api.github.com/repos/${{ github.repository }}/check-runs?check_name=mutation-results&per_page=100")
+              
+              # Debug: Show what we got
+              echo "Debug: API response preview:"
+              echo "$ALL_CHECK_RUNS" | head -5
               
               LATEST_CHECK_RUN=$(echo "$ALL_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | select(.status != null) | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha}' | head -1)
               
@@ -153,6 +162,40 @@ jobs:
           echo "⚡ Skipping check run wait for manual dispatch run"
           echo "📊 Proceeding immediately with available results"
           echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
+
+      - name: Use latest check run immediately
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.use_latest_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚀 Using latest mutation-results check run immediately..."
+          
+          # Get latest check run directly
+          LATEST_CHECK_RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/check-runs?check_name=mutation-results&per_page=10")
+          
+          echo "Debug: Latest check runs API response:"
+          echo "$LATEST_CHECK_RUNS" | jq '.check_runs[]? | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -3
+          
+          LATEST_CHECK_RUN=$(echo "$LATEST_CHECK_RUNS" | jq -r '.check_runs[]? | select(.name == "mutation-results") | {id: .id, status: .status, conclusion: .conclusion, head_sha: .head_sha, created_at: .created_at}' | head -1)
+          
+          if [[ -n "$LATEST_CHECK_RUN" && "$LATEST_CHECK_RUN" != "null" ]]; then
+            MUTATION_STATUS=$(echo "$LATEST_CHECK_RUN" | jq -r '.status // ""')
+            MUTATION_CONCLUSION=$(echo "$LATEST_CHECK_RUN" | jq -r '.conclusion // ""')
+            CHECK_RUN_SHA=$(echo "$LATEST_CHECK_RUN" | jq -r '.head_sha // ""')
+            CHECK_RUN_ID=$(echo "$LATEST_CHECK_RUN" | jq -r '.id // ""')
+            
+            echo "✅ Found latest mutation-results check run:"
+            echo "  ID: $CHECK_RUN_ID"
+            echo "  Commit: ${CHECK_RUN_SHA:0:8}"
+            echo "  Status: $MUTATION_STATUS"
+            echo "  Conclusion: $MUTATION_CONCLUSION"
+            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
+          else
+            echo "❌ No mutation-results check run found in recent history"
+            echo "📋 Will proceed with any available code scanning results"
+            echo "SHOWING_EXISTING_RESULTS=true" >> $GITHUB_ENV
+          fi
 
       - name: Get PR Number
         env:
