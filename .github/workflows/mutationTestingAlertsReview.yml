@@ -354,7 +354,7 @@ jobs:
             RECOMMENDATION="Significant test coverage gaps detected. Review and enhancement required."
           else
             ASSESSMENT="Critical"
-            RECOMMENDATION="Test coverage is insufficient. Immediate attention required."
+            RECOMMENDATION="Test coverage is insufficient, or mutation testing is not configured correctly."
           fi
           
           COMMENT_BODY+="### Quality Assessment\n\n"
