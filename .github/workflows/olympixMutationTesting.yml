@@ -8,7 +8,7 @@ name: Olympix Mutation Testing
 # Configuration: Directories to exclude from mutation testing
 # These typically contain interfaces, utility code, tests, or mocks that aren't chain-facing
 env:
-  EXCLUDED_DIRS: "Interfaces Libraries Helpers Errors"  # Space-separated list of directory names to ignore
+  EXCLUDED_DIRS: "Interfaces interfaces Libraries libraries Helpers helpers Errors errors Test test Tests tests Mock mock Mocks mocks"  # Space-separated list of directory names to ignore
 
 on:
   pull_request:
@@ -61,11 +61,14 @@ jobs:
             # Build find command with exclusions
             FIND_CMD="find src/ -name '*.sol' -type f"
             
-            # Add exclusions for each directory (manually handle known directories)
-            for dir in Interfaces Libraries Helpers Errors; do
+            # Add exclusions for each directory and file pattern
+            for dir in ${EXCLUDED_DIRS}; do
               FIND_CMD="$FIND_CMD ! -path 'src/$dir/*'"
               echo "Excluding: src/$dir/*"
             done
+            
+            # Exclude test files and interface naming convention
+            FIND_CMD="$FIND_CMD ! -name '*.t.sol' ! -name 'I*.sol'"
             
             echo "Find command: $FIND_CMD"
             
@@ -157,10 +160,13 @@ jobs:
             # Build find command with exclusions
             FIND_CMD="find src/ -name '*.sol' -type f"
             
-            # Add exclusions for each directory (manually handle known directories)
-            for dir in Interfaces Libraries Helpers Errors; do
+            # Add exclusions for each directory and file pattern
+            for dir in ${EXCLUDED_DIRS}; do
               FIND_CMD="$FIND_CMD ! -path 'src/$dir/*'"
             done
+            
+            # Exclude test files and interface naming convention
+            FIND_CMD="$FIND_CMD ! -name '*.t.sol' ! -name 'I*.sol'"
             
             # Get chain-facing Solidity files (limit to 100 for CLI compatibility)
             files=$(eval "$FIND_CMD" | head -100)
